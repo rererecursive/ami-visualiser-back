@@ -1,0 +1,27 @@
+{
+    "id": {
+        "S": "unknown"
+    },
+    "download": {
+        "M": {}
+    },
+    "languages": {
+        "M": {}
+    },
+    "packages": {
+        "M": {}
+    },
+    "summary": {
+        "M": {
+            "CreationDate": {
+                "S": "unknown"
+            },
+            "OwnerId": {
+                "S": "unknown"
+            },
+            "Name": {
+                "S": "unknown"
+            }
+        }
+    }
+}
