@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-BAKED_IMAGE_ID=$(jq -r '.builds[0].artifact_id' manifest.json | cut -d: -f2)
+BAKED_IMAGE_ID=$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d: -f2)
 echo "Baked image ID: ${BAKED_IMAGE_ID}"
 
 SOURCE_IMAGE_ID=$(grep -m 1 "Found Image ID:" output.log | awk '{print $NF}')

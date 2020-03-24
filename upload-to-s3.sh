@@ -1,5 +1,5 @@
 #!/bin/bash
-BUCKET="ztlewis"
+BUCKET="ztlewis-builds"
 PREFIX="packer-builds"
 FOLDER=$(grep -m 1 "Prevalidating AMI Name" output.log | awk '{print $NF}' | sed 's@/@-@g')
 

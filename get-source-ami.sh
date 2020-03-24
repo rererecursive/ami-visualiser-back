@@ -15,3 +15,6 @@ aws ec2 describe-images \
 aws ec2 describe-tags \
     --filters "Name=resource-id,Values=$SOURCE_IMAGE_ID Name=resource-type,Values=image" > tags.json
 jq -s '.[0] * .[1]' source.json tags.json > logs/source-ami.json
+
+rm -rf source.json tags.json
+
