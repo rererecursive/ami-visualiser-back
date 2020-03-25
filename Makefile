@@ -16,6 +16,8 @@ SHELL=/bin/bash
 MAKE_ENV += REGION APPLICATION GIT_BRANCH GIT_COMMIT BUILD_DATE
 SHELL_EXPORT := $(foreach v,$(MAKE_ENV),$(v)='$($(v))' )
 
+all: build get-produced-ami get-source-ami get-ohai-output upload-to-s3
+
 build:
 	${SHELL_EXPORT} envsubst < ${TEMPLATE_IN} > ${TEMPLATE_OUT}
 	packer build -on-error=abort -color=false -machine-readable ${TEMPLATE_OUT} | tee logs/output.log
