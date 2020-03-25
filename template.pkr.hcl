@@ -22,7 +22,7 @@ source "amazon-ebs" "example" {
     source_ami_filter {
         filters {
           virtualization-type = "hvm"
-          name =  "ubuntu/images/hvm-ssd/ubuntu-bionic-18.04-amd64-server-*"
+          name =  "ubuntu/images/hvm-ssd/ubuntu-bionic-18.04-amd64-server*"
           root-device-type = "ebs"
         }
         owners = ["099720109477"]
@@ -42,7 +42,11 @@ build {
   ]
 
   provisioner "shell" {
-    scripts = ["install.sh"]
+    script = "scripts/install.sh"
+  }
+
+  provisioner "shell" {
+    script = "scripts/run-ohai.sh"
   }
 
   # provisioner "ansible-local" {
@@ -55,11 +59,11 @@ build {
   # }
 
   post-processor "manifest" {
-    output      = "manifest.json"
+    output      = "logs/manifest.json"
     strip_path  = true
   }
 
-  post-processor "shell-local" {
-    script = "tag-ami.sh"
-  }
+  # post-processor "shell-local" {
+  #   script = "tag-ami.sh"
+  # }
 }
