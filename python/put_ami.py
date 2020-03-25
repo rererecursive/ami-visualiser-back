@@ -23,87 +23,141 @@ import json
 import time
 import os
 import boto3
+import zipfile
 
-def handler(event, context):
-  region  = os.environ['REGION']
+region  = os.environ['REGION']
+table   = os.environ['TABLE']
+dynamo_client = boto3.client('dynamodb', region_name=region)
+ec2_client    = boto3.client('ec2', region_name=region)
+s3_client     = boto3.client('s3', region_name=region)
+
+def lambda_handler(event, context):
   record  = event['Records'][0]
   bucket  = record['s3']['bucket']['name']
   key     = record['s3']['object']['key']
-  folder  = ''.join(key.rpartition('/')[:-1])
+  folder  = ''.join(key.rpartition('/')[:-1]) # 'x/y/z' -> 'x/y/'
   ami     = AMI()
-
-  print("Fetching files from:")
-  print(f"  S3 bucket: {bucket}")
-  print(f"  S3 folder: {folder}")
+  amis    = []
+  files   = {}
 
   # print("Waiting 5 seconds for other files to be uploaded...")
   # time.sleep(5)
-  s3_client = boto3.client('s3', region_name=region)
 
   # Process each file in the S3 folder.
-  for file in ami.get_files():
-    print(f"Fetching file: {file} ...")
-    path = folder + file
-    obj = s3_client.get_object(Bucket=bucket, Key=path)
-    data = obj['Body'].read().decode('utf-8')
-    ami.process_file(file, data)
+  files = fetch_files_from_s3(bucket, folder, ami.get_files())
+  ami.process_files(files)
 
-  # Convert and send the item to DynamoDB.
-  table = 'amis'
-  item = ami.to_dynamodb_schema()
-  dynamo_client = boto3.client('dynamodb', region_name=region)
-  print(f"Adding the following item to table '{table}' ...")
-  print(json.dumps(item, indent=2))
-  dynamo_client.put_item(
-    TableName=table,
-    Item=item,
-    ConditionExpression="attribute_not_exists(id)" # Existing images are immutable
+  # Confirm the source (parent) AMI exists in DynamoDB as well.
+  new_parent_ami = get_parent_ami_to_add(ami, files['source-ami.json'])
+  if new_parent_ami:
+    print(f"Parent AMI '{new_parent_ami.schema['id']}' will be added to the table.")
+    amis.append(new_parent_ami)
+  else:
+    print("Parent AMI already exists in table.")
+
+  amis.append(ami)
+
+  # Convert and send the items to DynamoDB.
+  for i,a in enumerate(amis):
+    item = a.to_dynamodb_schema()
+    print(f"Adding the following item to table '{table}' ...")
+    print(json.dumps(item))
+    dynamo_client.put_item(
+      TableName=table,
+      Item=item
+    )
+
+
+def fetch_files_from_s3(bucket, folder, filenames):
+  files = {}
+  build_zip = 'build.zip'
+
+  print(f"Fetching '{build_zip}' from:")
+  print(f"  S3 bucket: {bucket}")
+  print(f"  S3 folder: {folder}")
+
+  os.chdir('/tmp')
+  s3_client.download_file(
+    Bucket=bucket,
+    Key=folder + build_zip,
+    Filename=build_zip
   )
 
+  with zipfile.ZipFile(build_zip, 'r') as zip_ref:
+    zip_ref.extractall('.')
+
+  for file in filenames:
+    print(f"Reading {file} ...")
+    with open(file) as fh:
+      data = fh.read()
+
+    if file.endswith('.json'):
+      data = json.loads(data)
+
+    files[file] = data
+
+  return files
+
+def get_parent_ami_to_add(ami, parent_data):
+  """Ensure that parent AMIs exist in the table.
+  If they don't, create an AMI object for each of them.
+
+  The produced image's parent is provided in the file. Subsequent parents
+  must be queried for.
+  """
+  parent_ami = None
+  parent = ami.schema['parent']
+  parent_item = dynamo_client.get_item(TableName=table, Key={"id": {"S":parent}})
+
+  if 'Item' not in parent_item:
+    parent_ami = AMI()
+    parent_ami.add_ami_details(parent_data)
+
+  return parent_ami
 """
 Each Dynamo record is a document describing the AMI.
 It links to other data via a "parent".
 A parent is an AMI ID that must be resolved to an integer by querying Dynamo.
 This is the only transformation required before storing the document into Dynamo.
 """
+
 class AMI:
   def __init__(self):
     self.schema = {
       'id':         '',
+      'parent':     'unknown',
       'download':   {},
       'languages':  {},
       'packages':   {},
-      'summary':    {}
+      'summary':    {},
       # 'tags':       [],
     }
     self.processors = {
       # 'manifest.json':      [],
-      # 'ohai.json':          [self.add_packages, self.add_languages],
+      'ohai.json':          [self.add_packages, self.add_languages, self.add_system_info],
       # 'output.log':         [],
-      'produced-ami.json':  [self.add_produced_ami_details]
-      # 'source-ami.json':    [self.add_source_ami_details],
+      'produced-ami.json':  [self.add_ami_details],
+      'source-ami.json':    [self.add_source_ami_details]
       # 'packer.json':        [self.add_bake_details]
     }
 
   def get_files(self):
     return list(self.processors.keys())
 
-  def process_file(self, filename, contents):
-    funcs = self.processors[filename]
+  def process_files(self, files):
+    for filename, contents in files.items():
+      funcs = self.processors[filename]
 
-    for fn in funcs:
-      if filename.endswith('.json'):
-        contents = json.loads(contents)
-
-      fn(contents)
+      for fn in funcs:
+        fn(contents)
 
   def add_source_ami_details(self, details):
     """Lookup the AMI ID from DynamoDB. If it does not exist, we'll
     need to create it using this same object.
     """
-    pass
+    self.schema['parent'] = details['ImageId']
 
-  def add_produced_ami_details(self, details):
+  def add_ami_details(self, details):
     keys_to_keep = ['CreationDate', 'OwnerId', 'Description', 'Name']
     items = {k:v for k,v in details.items() if k in keys_to_keep}
 
@@ -116,15 +170,31 @@ class AMI:
     """
     pass
 
-  def add_packages(self, packages):
+  def add_packages(self, dct):
     """Add package information (Chef, Docker).
     """
-    pass
+    packages = {'Docker':'docker.io'}
 
-  def add_languages(self, languages):
+    for k,v in packages.items():
+      if v in dct['packages']:
+        version = dct['packages'][v]
+        self.schema['packages'].update({k:version})
+
+  def add_languages(self, dct):
     """Add language information (Ruby, Python, etc).
     """
-    pass
+    languages = {k.capitalize():v['version'] for k,v in dct['languages'].items()}
+    self.schema['languages'].update(languages)
+
+  def add_system_info(self, dct):
+    """Add system information (OS, kernel).
+    """
+    self.schema['summary'].update(
+      {
+        'Kernel': dct['hostnamectl']['kernel'],
+        'OperatingSystem': dct['hostnamectl']['operating_system']
+      }
+    )
 
   def lookup_source_ami_id(self):
     """Query DynamoDB for the AMI's ID.
@@ -145,45 +215,3 @@ class AMI:
         output[key] = {'M': items}
 
     return output
-
-def get_event():
-  return {
-      "Records": [
-          {
-              "eventVersion": "2.1",
-              "eventSource": "aws:s3",
-              "awsRegion": "ap-southeast-2",
-              "eventTime": "2020-03-24T02:14:27.695Z",
-              "eventName": "ObjectCreated:Put",
-              "userIdentity": {
-                  "principalId": "AWS:AIDAUCEIG37ALE44XRKK6"
-              },
-              "requestParameters": {
-                  "sourceIPAddress": "49.176.18.172"
-              },
-              "responseElements": {
-                  "x-amz-request-id": "B2023E0029D3F448",
-                  "x-amz-id-2": "FQgKG41gLONrH4trFtAGlbppYugUhiM2ovrPRsrLEoLVbUf2G81yjO8Wwxns/hK31fx/O1aYFUL29YdIayMso0XzsreElCj3o0l2XrM9EJs="
-              },
-              "s3": {
-                  "s3SchemaVersion": "1.0",
-                  "configurationId": "zac",
-                  "bucket": {
-                      "name": "ztlewis-builds",
-                      "ownerIdentity": {
-                          "principalId": "A3A8XHM6GKL9A4"
-                      },
-                      "arn": "arn:aws:s3:::ztlewis-builds"
-                  },
-                  "object": {
-                      "key": "packer-builds/web-master-2020-03-23T21-23-01/source-ami.log",
-                      "size": 0,
-                      "eTag": "d41d8cd98f00b204e9800998ecf8427e",
-                      "sequencer": "005E796D04CFE221F5"
-                  }
-              }
-          }
-      ]
-  }
-
-handler(get_event(), {})

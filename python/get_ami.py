@@ -2,7 +2,7 @@ import json
 import os
 import boto3
 
-def handler(event, context):
+def lambda_handler(event, context):
   region  = os.environ['REGION']
   table   = os.environ['TABLE']
   items   = []
