@@ -1,2 +1,2 @@
 #!/bin/bash
-aws dynamodb put-item --table-name amis --item file://unknown.json
+aws dynamodb put-item --table-name amis --item '{"id": {"S": "unknown"}}'
